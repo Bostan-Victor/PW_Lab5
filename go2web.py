@@ -6,35 +6,67 @@ from urllib.parse import urlparse, quote_plus
 import html2text
 import ssl
 from bs4 import BeautifulSoup
+import os
+import hashlib
+import pickle
+from pathlib import Path
+
+# Cache directory setup
+CACHE_DIR = Path.home() / '.go2web_cache'
+CACHE_DIR.mkdir(exist_ok=True)
+
+def get_cache_key(url: str) -> str:
+    """Generate a unique filename for each URL using MD5 hash."""
+    return hashlib.md5(url.encode()).hexdigest()
+
+def get_cached_response(url: str) -> str | None:
+    """Retrieve cached response if it exists."""
+    cache_key = get_cache_key(url)
+    cache_file = CACHE_DIR / cache_key
+    if cache_file.exists():
+        with open(cache_file, 'rb') as f:
+            return pickle.load(f)
+    return None
+
+def cache_response(url: str, response: str) -> None:
+    """Save a response to the cache."""
+    cache_key = get_cache_key(url)
+    cache_file = CACHE_DIR / cache_key
+    with open(cache_file, 'wb') as f:
+        pickle.dump(response, f)
 
 def http_request(url, headers=None):
+    # Check cache first
+    cached = get_cached_response(url)
+    if cached:
+        return cached
+
     try:
         parsed = urlparse(url)
         if not parsed.scheme:
             url = 'http://' + url
             parsed = urlparse(url)
-            
+        
         host = parsed.netloc
-        path = parsed.path if parsed.path else '/'
+        path = parsed.path or '/'
         if parsed.query:
             path += '?' + parsed.query
         
-        # Set default headers
         default_headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            'User-Agent': 'Mozilla/5.0',
             'Accept': 'text/html',
             'Connection': 'close'
         }
         if headers:
             default_headers.update(headers)
-            
-        headers_str = '\r\n'.join(f'{k}: {v}' for k, v in default_headers.items())
-        request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\n{headers_str}\r\n\r\n"
         
-        # Create appropriate socket connection
-        context = ssl.create_default_context()
+        request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\n"
+        request += '\r\n'.join(f'{k}: {v}' for k, v in default_headers.items())
+        request += '\r\n\r\n'
+        
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             if parsed.scheme == 'https':
+                context = ssl.create_default_context()
                 s = context.wrap_socket(s, server_hostname=host)
             port = 443 if parsed.scheme == 'https' else 80
             s.connect((host, port))
@@ -48,7 +80,11 @@ def http_request(url, headers=None):
                 response += data
         
         headers, _, body = response.partition(b'\r\n\r\n')
-        return body.decode('utf-8', errors='ignore')
+        decoded_body = body.decode('utf-8', errors='ignore')
+        
+        # Cache the response before returning
+        cache_response(url, decoded_body)
+        return decoded_body
     
     except Exception as e:
         print(f"Request failed: {str(e)}")
