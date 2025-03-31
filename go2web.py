@@ -3,6 +3,7 @@ import sys
 import argparse
 import socket
 from urllib.parse import urlparse
+import html2text 
 
 def http_request(url):
     # Parse URL
@@ -27,6 +28,12 @@ def http_request(url):
     headers, _, body = response.partition(b'\r\n\r\n')
     return body.decode('utf-8', errors='ignore')
 
+def make_human_readable(html):
+    h = html2text.HTML2Text()
+    h.ignore_links = False
+    h.ignore_images = True
+    return h.handle(html)
+
 def main():
     parser = argparse.ArgumentParser(description='go2web - HTTP client and search utility')
     parser.add_argument('-u', '--url', help='make an HTTP request to the specified URL')
@@ -39,7 +46,8 @@ def main():
 
     if args.url:
         response = http_request(args.url)
-        print(response)
+        clean_response = make_human_readable(response) 
+        print(clean_response)
     elif args.search:
         search_term = ' '.join(args.search)
         print(f"Would search for: {search_term}")
