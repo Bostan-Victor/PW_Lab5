@@ -35,60 +35,110 @@ def cache_response(url: str, response: str) -> None:
     with open(cache_file, 'wb') as f:
         pickle.dump(response, f)
 
-def http_request(url, headers=None):
+def http_request(url, accept='text/html', max_redirects=5):
+    """
+    Make an HTTP/HTTPS request with:
+    - Caching
+    - HTTPS support
+    - Redirect handling
+    - Content negotiation
+    """
+    if max_redirects <= 0:
+        return None, "Too many redirects"
+
     # Check cache first
-    cached = get_cached_response(url)
+    cache_key = get_cache_key(url)
+    cached = get_cached_response(cache_key)
     if cached:
-        return cached
+        return cached['content_type'], cached['body']
 
     try:
         parsed = urlparse(url)
         if not parsed.scheme:
             url = 'http://' + url
             parsed = urlparse(url)
-        
+
         host = parsed.netloc
         path = parsed.path or '/'
         if parsed.query:
             path += '?' + parsed.query
-        
-        default_headers = {
+
+        # Prepare headers
+        headers = {
             'User-Agent': 'Mozilla/5.0',
-            'Accept': 'text/html',
-            'Connection': 'close'
+            'Accept': accept,
+            'Connection': 'close',
+            'Host': host
         }
-        if headers:
-            default_headers.update(headers)
-        
-        request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\n"
-        request += '\r\n'.join(f'{k}: {v}' for k, v in default_headers.items())
+
+        # Build request
+        request = f"GET {path} HTTP/1.1\r\n"
+        request += '\r\n'.join(f'{k}: {v}' for k, v in headers.items())
         request += '\r\n\r\n'
-        
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+
+        # Create connection
+        context = ssl.create_default_context()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             if parsed.scheme == 'https':
-                context = ssl.create_default_context()
-                s = context.wrap_socket(s, server_hostname=host)
+                sock = context.wrap_socket(sock, server_hostname=host)
             port = 443 if parsed.scheme == 'https' else 80
-            s.connect((host, port))
-            s.sendall(request.encode())
-            
+            sock.connect((host, port))
+            sock.sendall(request.encode())
+
+            # Receive response
             response = b''
             while True:
-                data = s.recv(4096)
+                data = sock.recv(4096)
                 if not data:
                     break
                 response += data
-        
-        headers, _, body = response.partition(b'\r\n\r\n')
+
+        # Parse response
+        headers_part, _, body = response.partition(b'\r\n\r\n')
+        headers = headers_part.decode('utf-8', errors='ignore')
+
+        # Check for redirects (301, 302)
+        status_line = headers.split('\r\n')[0]
+        if '301' in status_line or '302' in status_line:
+            for line in headers.split('\r\n'):
+                if line.lower().startswith('location:'):
+                    new_url = line.split(':', 1)[1].strip()
+                    if not new_url.startswith('http'):
+                        new_url = f"{parsed.scheme}://{host}{new_url}"
+                    return http_request(new_url, accept, max_redirects-1)
+
+        # Get content type
+        content_type = 'text/html'  # default
+        for line in headers.split('\r\n'):
+            if line.lower().startswith('content-type:'):
+                content_type = line.split(':', 1)[1].strip()
+                break
+
         decoded_body = body.decode('utf-8', errors='ignore')
-        
-        # Cache the response before returning
-        cache_response(url, decoded_body)
-        return decoded_body
-    
+
+        # Cache the response (with content type)
+        cache_response(cache_key, {
+            'content_type': content_type,
+            'body': decoded_body
+        })
+
+        return content_type, decoded_body
+
     except Exception as e:
         print(f"Request failed: {str(e)}")
-        return None
+        return None, None
+    
+def format_response(content_type, body):
+    """Convert response to human-readable format"""
+    if 'application/json' in content_type:
+        try:
+            import json
+            parsed = json.loads(body)
+            return json.dumps(parsed, indent=2)
+        except:
+            return body  # Fallback to raw if invalid JSON
+    else:
+        return make_human_readable(body)
 
 def make_human_readable(html):
     h = html2text.HTML2Text()
@@ -131,9 +181,10 @@ def search_bing(query):
         return []
 
 def main():
-    parser = argparse.ArgumentParser(description='go2web - HTTP client and search utility')
-    parser.add_argument('-u', '--url', help='make an HTTP request to the specified URL')
-    parser.add_argument('-s', '--search', nargs='+', help='search the term using a search engine')
+    parser = argparse.ArgumentParser(description='go2web - HTTP client')
+    parser.add_argument('-u', '--url', help='URL to fetch')
+    parser.add_argument('-s', '--search', nargs='+', help='Search term')
+    parser.add_argument('--json', action='store_true', help='Prefer JSON response')
     args = parser.parse_args()
 
     if not any(vars(args).values()):
@@ -141,10 +192,10 @@ def main():
         return
 
     if args.url:
-        response = http_request(args.url)
+        accept = 'application/json' if args.json else 'text/html'
+        content_type, response = http_request(args.url, accept)
         if response:
-            clean_response = make_human_readable(response)
-            print(clean_response)
+            print(format_response(content_type, response))
     elif args.search:
         search_term = ' '.join(args.search)
         results = search_bing(search_term)
