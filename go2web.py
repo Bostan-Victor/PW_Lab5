@@ -10,6 +10,7 @@ import os
 import hashlib
 import pickle
 from pathlib import Path
+import webbrowser
 
 # Cache directory setup
 CACHE_DIR = Path.home() / '.go2web_cache'
@@ -149,18 +150,13 @@ def make_human_readable(html):
 def search_bing(query):
     try:
         search_url = f"http://www.bing.com/search?q={quote_plus(query)}"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept-Language': 'en-US,en;q=0.9'
-        }
-        
-        html = http_request(search_url, headers)
+        content_type, html = http_request(search_url)
         if not html:
             return []
-            
+
         soup = BeautifulSoup(html, 'html.parser')
         results = []
-        
+
         # Find all result blocks in Bing
         for result in soup.find_all('li', class_='b_algo'):
             link = result.find('a')
@@ -173,9 +169,28 @@ def search_bing(query):
                 })
                 if len(results) >= 10:
                     break
-        
+
+        # Print results
+        print(f"Top {len(results)} results for '{query}':\n")
+        for i, result in enumerate(results, 1):
+            print(f"{i}. {result['title']}")
+            print(f"   {result['link']}\n")
+
+        # Prompt to open a link
+        try:
+            choice = int(input("Enter the result number to open (0 to skip): "))
+            if 1 <= choice <= len(results):
+                webbrowser.open(results[choice - 1]['link'])
+                print("Opening link in your default browser...")
+            elif choice == 0:
+                print("No link opened.")
+            else:
+                print("Invalid choice.")
+        except ValueError:
+            print("Invalid input. Please enter a number.")
+
         return results
-            
+
     except Exception as e:
         print(f"Search error: {str(e)}")
         return []
